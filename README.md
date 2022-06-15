@@ -14,3 +14,5 @@ Then, build the project and start
 npm run build
 npm run start
 ```
+
+If any credit cards are detected, they are outputted in a csv file in a generated *"Reports"* directory
