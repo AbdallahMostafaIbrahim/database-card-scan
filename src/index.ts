@@ -1,6 +1,8 @@
 import inquirer from "inquirer";
+import fs from "fs";
 import mssql from "mssql";
 import mysql from "mysql2/promise";
+import oracledb from "oracledb";
 import chalk from "chalk";
 import { generateCSV, luhnChk } from "./helper";
 import { ConnectionOptions } from "mysql2/typings/mysql";
@@ -9,6 +11,9 @@ export type ScanResult = Record<
   string,
   { headers: string[]; results: any[][] }
 >;
+
+const libPath = "./instant_oracle_client";
+if (fs.existsSync(libPath)) oracledb.initOracleClient({ libDir: libPath });
 
 const main = async () => {
   const answers = await inquirer.prompt({
@@ -59,14 +64,69 @@ const main = async () => {
       break;
     }
     case "Oracle": {
-      break;
+      console.log(
+        chalk.yellowBright(
+          "\n*\n*\n\nMake sure the the installed driver matches the database version and is in the current directory with folder name 'instant_oracle_client'\n\n*\n*\n"
+        )
+      );
+      const inputMethod = await inquirer.prompt({
+        name: "method",
+        type: "list",
+        message: "How would you like to connect:\n",
+        choices: ["Default", "Connection String"],
+      });
+
+      const config: oracledb.ConnectionAttributes = {};
+      var db = "";
+
+      if (inputMethod.method === "Default") {
+        const answers = await inquirer.prompt([
+          { name: "hostname", type: "input", message: "Hostname: " },
+          { name: "sid", type: "input", message: "SID: " },
+          { name: "user", type: "input", message: "User: " },
+          { name: "password", type: "password", message: "Password: " },
+          { name: "database", type: "input", message: "Database Name: " },
+          {
+            name: "port",
+            type: "input",
+            message: "Port (Blank for Default): ",
+          },
+        ]);
+
+        config["user"] = answers.user;
+        config["password"] = answers.password;
+        config["connectString"] = `(DESCRIPTION=(ADDRESS=(PROTOCOL=TCP)(Host=${
+          answers.hostname
+        })(Port=${answers.port || 1521}))(CONNECT_DATA=(SID=${answers.sid})))`;
+        db = answers.database;
+      }
+      if (inputMethod.method === "Connection String") {
+        const answer = await inquirer.prompt({
+          name: "connection_string",
+          type: "input",
+          message: "Connection String: ",
+        });
+        const auth = await inquirer.prompt([
+          { name: "user", type: "input", message: "User: " },
+          { name: "password", type: "password", message: "Password: " },
+          { name: "database", type: "input", message: "Database Name: " },
+        ]);
+        config["connectionString"] = answer.connection_string;
+        config["user"] = auth.user;
+        config["password"] = auth.password;
+        db = auth.database;
+      }
+
+      matches = await oracle(config, db);
+      await generateCSV({ data: matches, name: `${db}-oracle` });
     }
     case "Mongodb": {
+      // I still have to this :(
       break;
     }
   }
 
-  if (Object.keys(matches).length > 0) {
+  if (Object.keys(matches || {}).length > 0) {
     console.log(chalk.red("Credit Cards Detected"));
   } else {
     console.log(chalk.green("Scan Completed with no matches!"));
@@ -179,6 +239,47 @@ async function mySQL(config: ConnectionOptions): Promise<ScanResult> {
   } catch (e) {
     console.log(e);
   }
+}
+
+async function oracle(
+  config: oracledb.ConnectionAttributes,
+  dbName: string
+): Promise<ScanResult> {
+  const connection = await oracledb.getConnection(config);
+  console.log(chalk.greenBright("Connected!"));
+
+  console.log(chalk.greenBright("Fetching Tables..."));
+  const result = await connection.execute(
+    `SELECT table_name from all_tables WHERE owner=:owner`,
+    [dbName.toUpperCase()]
+  );
+
+  const tables = result.rows.map((r) => r[0]);
+
+  console.log(chalk.greenBright("Looping Over Tables..."));
+  let matches: ScanResult = {};
+  for (var i = 0; i < tables.length; i++) {
+    const table = tables[i];
+    const result = await connection.execute(`SELECT * FROM ${table}`);
+    const tableHeaders = result.metaData.map((r) => r.name);
+    result.rows.forEach((row) => {
+      tableHeaders.forEach((_, idx) => {
+        if (row[idx] === null || row[idx] === undefined) return;
+        const isCreditCard = luhnChk(row[idx].toString().trim());
+        if (isCreditCard) {
+          if (!matches[table]) {
+            matches[table] = {
+              headers: tableHeaders,
+              results: [row as any[]],
+            };
+          } else
+            matches[table].results = [...matches[table].results, row as any[]];
+        }
+      });
+    });
+  }
+
+  return matches;
 }
 
 main();
