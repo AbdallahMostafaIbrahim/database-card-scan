@@ -2,3 +2,4 @@ Reports
 node_modules
 .DS_Store
 dist
+instant_oracle_client

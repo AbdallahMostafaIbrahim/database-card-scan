@@ -158,15 +158,19 @@ async function microsoftSQL(config: mssql.config): Promise<ScanResult> {
       (table) => `${table.TABLE_SCHEMA}.${table.TABLE_NAME}`
     );
 
+    console.log(tables);
+
     // Loop Over Tables
     console.log(chalk.greenBright("Looping Over Tables..."));
     let matches: ScanResult = {};
     for (var i = 0; i < tables.length; i++) {
       const table = tables[i];
+
       const { recordset: results } = await pool
         .request()
-        .query(`SELECT * FROM ${table};`);
-      const tableHeaders = Object.keys(results[0]);
+        .query(`SELECT TOP 100 * FROM ${table} ORDER BY 1;`);
+
+      const tableHeaders = Object.keys(results[0] || {});
       results.forEach((result) => {
         tableHeaders.forEach((header) => {
           if (result[header] === null || result[header] === undefined) return;
@@ -212,9 +216,9 @@ async function mySQL(config: ConnectionOptions): Promise<ScanResult> {
     for (var i = 0; i < tables.length; i++) {
       const table = tables[i];
       const [results] = await connection.execute<mysql.RowDataPacket[]>(
-        `SELECT * FROM ${table};`
+        `SELECT * FROM ${table} LIMIT 100;`
       );
-      const tableHeaders = Object.keys(results[0]);
+      const tableHeaders = Object.keys(results[0] || {});
       results.forEach((result) => {
         tableHeaders.forEach((header) => {
           if (result[header] === null || result[header] === undefined) return;
