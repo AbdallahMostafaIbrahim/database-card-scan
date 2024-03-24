@@ -21,7 +21,11 @@
     "mysql": "^2.18.1",
     "mysql2": "^2.3.3",
     "oracledb": "^5.4.0",
+    "pg": "^8.11.3",
     "ts-node": "^10.8.1",
     "typescript": "^4.7.3"
+  },
+  "devDependencies": {
+    "@types/pg": "^8.11.4"
   }
 }

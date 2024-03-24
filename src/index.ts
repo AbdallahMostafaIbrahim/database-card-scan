@@ -3,6 +3,7 @@ import fs from "fs";
 import mssql from "mssql";
 import mysql from "mysql2/promise";
 import oracledb from "oracledb";
+import pg from "pg";
 import chalk from "chalk";
 import { generateCSV, luhnChk } from "./helper";
 import { ConnectionOptions } from "mysql2/typings/mysql";
@@ -12,15 +13,26 @@ export type ScanResult = Record<
   { headers: string[]; results: any[][] }
 >;
 
+// Still not working for oracle
+const LIMIT = 1000;
+
 const libPath = "./instant_oracle_client";
-if (fs.existsSync(libPath)) oracledb.initOracleClient({ libDir: libPath });
+if (fs.existsSync(libPath)) {
+  oracledb.initOracleClient({ libDir: libPath });
+} else {
+  console.log(
+    chalk.yellow(
+      "WARNING: Oracle Instant Client not found in the current directory. Please make sure the folder is named 'instant_oracle_client'. If you are using oracle, then the tool won't work."
+    )
+  );
+}
 
 const main = async () => {
   const answers = await inquirer.prompt({
     name: "database_type",
     type: "list",
     message: "Choose Database:\n",
-    choices: ["My SQL", "Microsoft SQL", "Oracle", "Mongodb"],
+    choices: ["My SQL", "Microsoft SQL", "Oracle", "Mongodb", "Postgresql"],
   });
 
   var matches: ScanResult;
@@ -124,6 +136,24 @@ const main = async () => {
       // I still have to this :(
       break;
     }
+    case "Postgresql": {
+      const answers = await promptConnectionParams();
+
+      matches = await postgres({
+        host: answers.hostname,
+        user: answers.user,
+        password: answers.password,
+        database: answers.database,
+        port: parseInt(answers.port) || 5432,
+      });
+
+      await generateCSV({
+        data: matches,
+        name: `${answers.hostname}-postgresql`,
+      });
+
+      break;
+    }
   }
 
   if (Object.keys(matches || {}).length > 0) {
@@ -131,6 +161,7 @@ const main = async () => {
   } else {
     console.log(chalk.green("Scan Completed with no matches!"));
   }
+  process.exit();
 };
 
 async function promptConnectionParams() {
@@ -168,7 +199,7 @@ async function microsoftSQL(config: mssql.config): Promise<ScanResult> {
 
       const { recordset: results } = await pool
         .request()
-        .query(`SELECT TOP 100 * FROM ${table} ORDER BY 1;`);
+        .query(`SELECT TOP ${LIMIT} * FROM ${table} ORDER BY 1;`);
 
       const tableHeaders = Object.keys(results[0] || {});
       results.forEach((result) => {
@@ -216,7 +247,7 @@ async function mySQL(config: ConnectionOptions): Promise<ScanResult> {
     for (var i = 0; i < tables.length; i++) {
       const table = tables[i];
       const [results] = await connection.execute<mysql.RowDataPacket[]>(
-        `SELECT * FROM ${table} LIMIT 100;`
+        `SELECT * FROM ${table} LIMIT ${LIMIT};`
       );
       const tableHeaders = Object.keys(results[0] || {});
       results.forEach((result) => {
@@ -278,6 +309,45 @@ async function oracle(
             };
           } else
             matches[table].results = [...matches[table].results, row as any[]];
+        }
+      });
+    });
+  }
+
+  return matches;
+}
+
+async function postgres(config: pg.ClientConfig): Promise<ScanResult> {
+  const pool = new pg.Pool(config);
+  const client = await pool.connect();
+  console.log(chalk.greenBright("Connected!"));
+
+  console.log(chalk.greenBright("Fetching Tables..."));
+  const result = await client.query(
+    `SELECT table_name from information_schema.tables WHERE table_schema='public'`
+  );
+
+  const tables = result.rows.map((r) => r.table_name);
+
+  console.log(chalk.greenBright("Looping Over Tables..."));
+  let matches: ScanResult = {};
+  for (var i = 0; i < tables.length; i++) {
+    const table = tables[i];
+    const result = await client.query(
+      `SELECT * FROM "${table}" LIMIT ${LIMIT}`
+    );
+    const tableHeaders = result.fields.map((r) => r.name);
+    result.rows.forEach((row) => {
+      tableHeaders.forEach((h) => {
+        if (row[h] === null || row[h] === undefined) return;
+        const isCreditCard = luhnChk(row[h].toString().trim());
+        if (isCreditCard) {
+          if (!matches[table]) {
+            matches[table] = {
+              headers: tableHeaders,
+              results: [Object.values(row)],
+            };
+          } else matches[table].results.push([Object.values(row)]);
         }
       });
     });
